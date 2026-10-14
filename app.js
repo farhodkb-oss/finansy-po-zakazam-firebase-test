@@ -22,7 +22,7 @@ const dirtyDate=iso=>iso&&/^\d{4}-\d\d-\d\d$/.test(iso)?iso:'—';
 let db=null,bulkMode=false,cloudConflicts=[],remoteHeads=new Map(),cloudEvents=[];
 let cloudReady=false,cloudOnline=false,unsubscribeCloud=null,activeUid=null,refreshChain=Promise.resolve();
 const inFlight=new Set();
-const state={driveStatus:'Firebase: вход не выполнен',page:'home',rows:[],refs:[],orders:[],ops:[],queue:[],session:false,connection:navigator.onLine?'online':'offline',busy:false,refGroup:'income',from:firstMonth(),to:today(),orderSearch:'',opSearch:'',orderFilter:'all',sort:{orders:['order_no',true],operations:['date',false],reports:['order_no',true],references:['name',true]},print:false};
+const state={driveStatus:'Firebase: вход не выполнен',page:'home',rows:[],refs:[],orders:[],ops:[],queue:[],session:false,connection:navigator.onLine?'online':'offline',busy:false,refGroup:'income',from:firstMonth(),to:today(),orderSearch:'',opSearch:'',orderFilter:'all',sort:{orders:['order_no',true],operations:['date',false],reports:['order_no',true],references:['name',true]},reportMode:'cash',reportOrderFilter:'all',print:false};
 
 async function openDB(userId){
  return new Promise((resolve,reject)=>{
@@ -86,12 +86,37 @@ function panelsStat(list){return `<div class="cards">${list.map(([icon,title,num
 function sumOperations(ops){return ops.reduce((r,t)=>(r[t.kind==='income'?'inc':'exp']+=Number(t.amount||0),r),{inc:0,exp:0});}
 function inRange(t){return (!state.from||t.date>=state.from)&&(!state.to||t.date<=state.to)}
 function dateFilters(){return `<div class="filters no-print">${input('С даты','filter_from',state.from,'date')}${input('По дату','filter_to',state.to,'date')}<button class="btn secondary" data-action="range-all" style="align-self:end">За всё время</button></div>`;}
+function sevenDayData(){
+ const now=new Date();now.setHours(12,0,0,0);
+ const result=[];
+ for(let i=6;i>=0;i--){
+   const d=new Date(now);d.setDate(now.getDate()-i);
+   const iso=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+   result.push({date:iso,...sumOperations(state.ops.filter(t=>t.date===iso))});
+ }
+ return result;
+}
+function cashChart(){
+ const days=sevenDayData();const maximum=Math.max(1,...days.flatMap(d=>[d.inc,d.exp]));
+ const totals=sumOperations(state.ops.filter(t=>days.some(d=>d.date===t.date)));
+ const hasData=days.some(d=>d.inc>0||d.exp>0);
+ const bars=days.map(d=>{
+   const ht=n=>n?Math.max(4,Math.round(n/maximum*112)):0;
+   return `<button type="button" class="chart-day" data-action="chart-day" data-date="${d.date}" aria-label="${day(d.date)}: приход ${money(d.inc)} сум, расход ${money(d.exp)} сум">
+     <div class="chart-bar-pair">
+       <span class="chart-bar income-bar" style="height:${ht(d.inc)}px" title="${day(d.date)} · Приход ${money(d.inc)} сум"></span>
+       <span class="chart-bar expense-bar" style="height:${ht(d.exp)}px" title="${day(d.date)} · Расход ${money(d.exp)} сум"></span>
+     </div><span class="chart-day-label">${d.date.slice(8)}.${d.date.slice(5,7)}</span>
+   </button>`;
+ }).join('');
+ return `<div class="panel chart-panel"><div class="panel-head"><div><h2>Поступления и расходы за последние 7 дней</h2><p>По календарным дням, отдельно приход и расход</p></div></div>
+ <div class="panel-inner"><div class="chart-meta"><div class="chart-legend"><span><i class="legend-dot income-bar"></i>Приход: <b>${money(totals.inc)} сум</b></span><span><i class="legend-dot expense-bar"></i>Расход: <b>${money(totals.exp)} сум</b></span></div>${hasData?'':'<span class="muted">За эти семь дней операций нет.</span>'}</div>
+ <div class="cash-chart"><div class="chart-scale"><span>${money(maximum)}</span><span>${money(Math.round(maximum/2))}</span><span>0</span></div><div class="chart-plot"><div class="chart-gridline top"></div><div class="chart-gridline middle"></div><div class="chart-gridline bottom"></div><div class="chart-days">${bars}</div></div></div></div></div>`;
+}
 function home(){const months=state.ops.filter(inRange),s=sumOperations(months),recent=[...state.ops].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6);
- const byDay=[];for(let i=6;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);const iso=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;byDay.push(sumOperations(state.ops.filter(t=>t.date===iso)));}
- const max=Math.max(...byDay.map(x=>x.inc+x.exp),1);
  return `<div class="hero"><div class="hero-row"><div><div class="hint">Денежная разница за выбранный период</div><div class="hero-value">${money(s.inc-s.exp)} сум</div><small>${day(state.from)} — ${day(state.to)} · Это движение денег, не бухгалтерская прибыль</small></div><div class="mini-actions"><button class="btn primary" data-action="new-income">+ Приход</button><button class="btn ghost" data-action="new-expense">− Расход</button></div></div></div>
  ${panelsStat([['↗','Поступления',s.inc,'green',`${months.filter(x=>x.kind==='income').length} операций`],['↘','Расходы',s.exp,'red',`${months.filter(x=>x.kind==='expense').length} операций`],['▣','Всего заказов',state.orders.length,'',`${state.orders.filter(o=>o.status==='В работе').length} в работе`]])}
- <div class="panel"><div class="panel-head"><div><h2>Поступления и расходы за последние 7 дней</h2><p>Суммарные движения денежных средств</p></div></div><div class="panel-inner"><div class="spark">${byDay.map(v=>`<i title="${money(v.inc+v.exp)} сум" style="height:${Math.max(8,(v.inc+v.exp)/max*58)}px"></i>`).join('')}</div></div></div>
+ ${cashChart()}
  <div class="panel"><div class="panel-head"><div><h2>Последние операции</h2><p>Все заказы</p></div><button class="btn secondary small no-print" data-page="operations">Показать все →</button></div>${txnTable(recent,'home')}</div>`;
 }
 function orders(){const filtered=sortItems(state.orders.filter(x=>[x.order_no,x.customer,x.description].join(' ').toLowerCase().includes(state.orderSearch.toLowerCase())),'orders');
@@ -116,14 +141,64 @@ function references(){const group=state.refGroup;let list=sortItems(refs(group,f
  const body=list.map(x=>`<tr><td><b>${e(x.name)}</b></td><td><span class="tag ${x.is_active?'income':'pending'}">${x.is_active?'Активен':'Отключён'}</span></td><td class="no-print"><div class="action-cell"><button class="btn small secondary" data-action="edit-ref" data-id="${x.id}">Изменить</button><button class="btn small ghost" data-action="toggle-ref" data-id="${x.id}">${x.is_active?'Отключить':'Включить'}</button><button class="btn small danger" data-action="delete-ref" data-id="${x.id}">×</button></div></td></tr>`).join('');
  return `<div class="panel"><div class="panel-head"><div><h2>Редактируемые справочники</h2><p>Добавляйте, переименовывайте и отключайте свои значения</p></div><button class="btn primary no-print" data-action="new-ref">+ Добавить</button></div><div class="refs-tabs no-print">${Object.entries(GROUPS).map(([id,name])=>`<button data-group="${id}" class="${id===group?'active':''}">${name}</button>`).join('')}</div><div class="desktop-table">${table(headers,body,'Справочник пуст')}</div><div class="mobile-list">${list.map(x=>`<div class="mobile-card"><div class="mobile-card-top"><strong>${e(x.name)}</strong><span class="tag ${x.is_active?'income':'pending'}">${x.is_active?'Активен':'Отключён'}</span></div><div class="mini-actions"><button class="btn secondary small" data-action="edit-ref" data-id="${x.id}">Изменить</button><button class="btn ghost small" data-action="toggle-ref" data-id="${x.id}">${x.is_active?'Отключить':'Включить'}</button><button class="btn danger small" data-action="delete-ref" data-id="${x.id}">×</button></div></div>`).join('')||'<div class="empty">Справочник пуст</div>'}</div></div>`;
 }
-function reportRows(){const map=new Map();state.orders.forEach(o=>map.set(o.id,{order_no:o.order_no,customer:o.customer,contract:o.contract_amount,inc:0,exp:0}));map.set('none',{order_no:'Общие',customer:'Без заказа',contract:0,inc:0,exp:0});
- state.ops.filter(inRange).forEach(t=>{const r=map.get(t.order_id||'none');if(r)r[t.kind==='income'?'inc':'exp']+=Number(t.amount)});
+function reportOrderFilter(t){
+ return state.reportOrderFilter==='all'||(state.reportOrderFilter==='none'?!t.order_id:t.order_id===state.reportOrderFilter);
+}
+function selectedReportOperations(){
+ return state.ops.filter(t=>inRange(t)&&reportOrderFilter(t));
+}
+function movementReport(){
+ const previous=state.ops.filter(t=>(!state.from||t.date<state.from)&&reportOrderFilter(t));
+ const before=sumOperations(previous),opening=before.inc-before.exp;
+ const list=[...selectedReportOperations()].sort((a,b)=>a.date.localeCompare(b.date)||a.id.localeCompare(b.id));
+ let running=opening;
+ const rows=list.map(t=>{
+   const inc=t.kind==='income'?Number(t.amount)||0:0;
+   const exp=t.kind==='expense'?Number(t.amount)||0:0;
+   running+=inc-exp;
+   return {...t,inc,exp,running,order_no:orderName(t.order_id)};
+ });
+ const totals=sumOperations(list);
+ return {rows,opening,inc:totals.inc,exp:totals.exp,closing:running};
+}
+function reportRows(){
+ const map=new Map();
+ state.orders.filter(o=>state.reportOrderFilter==='all'||state.reportOrderFilter===o.id).forEach(o=>map.set(o.id,{order_no:o.order_no,customer:o.customer,contract:o.contract_amount,inc:0,exp:0}));
+ if(state.reportOrderFilter==='all'||state.reportOrderFilter==='none')map.set('none',{order_no:'Общие',customer:'Без заказа',contract:0,inc:0,exp:0});
+ selectedReportOperations().forEach(t=>{const r=map.get(t.order_id||'none');if(r)r[t.kind==='income'?'inc':'exp']+=Number(t.amount)});
  return [...map.values()].map(r=>({...r,difference:r.inc-r.exp}));
 }
-function reports(){const rows=sortItems(reportRows(),'reports'), totals=rows.reduce((x,r)=>({inc:x.inc+r.inc,exp:x.exp+r.exp}),{inc:0,exp:0});
+function reportPeriodLabel(){return `${state.from?day(state.from):'начало учёта'} — ${state.to?day(state.to):'все даты'}`;}
+function reportPeriodControls(){
+ const actions=[['today','Сегодня'],['week','7 дней'],['month','Этот месяц'],['all','Всё время']];
+ return `<div class="report-filter-block no-print"><div class="period-buttons">${actions.map(([key,label])=>`<button class="btn small ${((key==='all'&&!state.from&&!state.to))?'primary':'secondary'}" data-action="period-preset" data-period="${key}">${label}</button>`).join('')}</div>
+ <div class="filters">${input('Период с','filter_from',state.from,'date')}${input('Период по','filter_to',state.to,'date')}${sel('Заказ','report_order',[['all','Все заказы'],['none','Общие (без заказа)'],...state.orders.map(o=>[o.id,`№ ${o.order_no} · ${o.customer}`])],state.reportOrderFilter)}</div></div>`;
+}
+function reportControls(){
+ return `<div class="panel report-controls"><div class="panel-head"><div><h2>Отчёты за выбранный период</h2><p>Выберите тип отчёта, даты и заказ</p></div></div><div class="panel-inner"><div class="report-tabs no-print"><button class="${state.reportMode==='cash'?'selected':''}" data-action="report-mode" data-mode="cash">Движение денег</button><button class="${state.reportMode==='orders'?'selected':''}" data-action="report-mode" data-mode="orders">По заказам</button></div>${reportPeriodControls()}</div></div>`;
+}
+function reportSummary(inc,exp,opening=null,closing=null){
+ const vals=opening===null?[['Приход',inc,'green'],['Расход',exp,'red'],['Денежная разница',inc-exp,'']]:[['Остаток на начало',opening,''],['Поступило',inc,'green'],['Израсходовано',exp,'red'],['Остаток на конец',closing,'']];
+ return `<div class="report-stats">${vals.map(([title,val,cls])=>`<div class="report-stat"><span>${title}</span><b class="${cls}">${money(val)} сум</b></div>`).join('')}</div>`;
+}
+function reportOrdersView(){
+ const rows=sortItems(reportRows(),'reports'),totals=rows.reduce((x,r)=>({inc:x.inc+r.inc,exp:x.exp+r.exp}),{inc:0,exp:0});
  const headers=sortHeader('reports','order_no','Заказ')+sortHeader('reports','customer','Заказчик')+sortHeader('reports','inc','Приход')+sortHeader('reports','exp','Расход')+sortHeader('reports','difference','Разница');
  const body=rows.map(r=>`<tr><td><b>${e(r.order_no)}</b></td><td>${e(r.customer)}</td><td class="money green">${money(r.inc)}</td><td class="money red">${money(r.exp)}</td><td class="money">${money(r.difference)}</td></tr>`).join('');
- return `<div class="panel"><div class="panel-head"><div><h2>Движение денег по заказам</h2><p>Включая заказы с нулевыми операциями</p></div><div class="mini-actions no-print"><button class="btn ghost small" data-action="csv">⇩ CSV</button><button class="btn secondary small" data-action="pdf">⇩ PDF</button><button class="btn ghost small" data-action="print">Печать / PDF офлайн</button></div></div><div class="panel-inner">${dateFilters()}<div class="report-stats"><div class="report-stat"><span>Приходы</span><b class="green">${money(totals.inc)} сум</b></div><div class="report-stat"><span>Расходы</span><b class="red">${money(totals.exp)} сум</b></div><div class="report-stat"><span>Денежная разница</span><b>${money(totals.inc-totals.exp)} сум</b></div></div></div>${table(headers,body)}<div class="panel-inner"><b>Итого:</b> ${money(totals.inc)} − ${money(totals.exp)} = <b>${money(totals.inc-totals.exp)} сум</b></div></div><div class="footer-note">Денежная разница не является бухгалтерской прибылью. При работе офлайн учитываются несинхронизированные операции на этом устройстве.</div>`;
+ const cards=rows.map(r=>`<div class="mobile-card"><b>№ ${e(r.order_no)} · ${e(r.customer)}</b><div class="report-card-line"><span>Приход: <b class="green">${money(r.inc)}</b></span><span>Расход: <b class="red">${money(r.exp)}</b></span></div><div>Разница: <b>${money(r.difference)} сум</b></div></div>`).join('');
+ return `<div class="panel report-print"><div class="panel-head"><div><h2>Движение денег по заказам</h2><p>Период: ${reportPeriodLabel()} · Включая заказы без операций</p></div>${reportExportButtons()}</div><div class="panel-inner">${reportSummary(totals.inc,totals.exp)}</div><div class="desktop-table">${table(headers,body,'Заказов нет')}</div><div class="mobile-list">${cards||'<div class="empty">Заказов нет</div>'}</div><div class="panel-inner"><b>Итого:</b> ${money(totals.inc)} − ${money(totals.exp)} = <b>${money(totals.inc-totals.exp)} сум</b></div></div>`;
+}
+function reportMovementView(){
+ const v=movementReport();
+ const headers=['Дата','Тип','Заказ','Категория','Оплата','От кого / кому','Приход, сум','Расход, сум','Остаток, сум','Примечание'].map(x=>`<th>${x}</th>`).join('');
+ const body=v.rows.map(t=>`<tr><td>${day(t.date)}</td><td>${t.kind==='income'?'Приход':'Расход'}</td><td>${e(t.order_no)}</td><td>${e(t.category)}</td><td>${e(t.payment)}</td><td>${e(t.counterparty)}</td><td class="money green">${t.inc?money(t.inc):'—'}</td><td class="money red">${t.exp?money(t.exp):'—'}</td><td class="money">${money(t.running)}</td><td>${e(t.comment)}</td></tr>`).join('');
+ const cards=v.rows.map(t=>`<div class="mobile-card"><div class="mobile-card-top"><span class="tag ${e(t.kind)}">${t.kind==='income'?'Приход':'Расход'}</span><b class="${t.inc?'green':'red'}">${t.inc?'+':'−'}${money(t.inc||t.exp)} сум</b></div><div><b>${day(t.date)} · № ${e(t.order_no)}</b> · ${e(t.category)}</div><div class="muted">${e(t.payment)} · ${e(t.counterparty)}</div>${t.comment?`<div class="muted">${e(t.comment)}</div>`:''}<div>Остаток после операции: <b>${money(t.running)} сум</b></div></div>`).join('');
+ return `<div class="panel report-print"><div class="panel-head"><div><h2>Отчёт «Движение денежных средств»</h2><p>Период: ${reportPeriodLabel()} · ${v.rows.length} операций</p></div>${reportExportButtons()}</div><div class="panel-inner">${reportSummary(v.inc,v.exp,v.opening,v.closing)}<div class="report-note">Остаток рассчитан по всем внесённым операциям до начала периода. Это расчётный денежный остаток, не сверенный с банковскими счетами или кассой.</div></div><div class="desktop-table">${table(headers,body,'В выбранном периоде операций нет')}</div><div class="mobile-list">${cards||'<div class="empty">За выбранный период операций нет</div>'}</div><div class="panel-inner"><b>Операций: ${v.rows.length}</b> · Приход ${money(v.inc)} − Расход ${money(v.exp)} = <b>${money(v.inc-v.exp)} сум</b></div></div>`;
+}
+function reportExportButtons(){return `<div class="mini-actions no-print"><button class="btn secondary small" data-action="csv">⇩ CSV</button><button class="btn ghost small" data-action="pdf">Печать / PDF</button></div>`;}
+function reports(){
+ if(state.from&&state.to&&state.from>state.to)return reportControls()+'<div class="notification">Дата начала позже даты окончания. Исправьте выбранный период.</div>';
+ return reportControls()+(state.reportMode==='cash'?reportMovementView():reportOrdersView())+'<div class="footer-note">Отчёт учитывает локальные несинхронизированные изменения. Для окончательного отчёта дождитесь статуса «Синхронизировано».</div>';
 }
 function settings(){
  return `<div class="panel"><div class="panel-head"><div><h2>Firebase и данные</h2><p>Cloud Firestore · личная база · офлайн</p></div></div><div class="panel-inner">
@@ -297,8 +372,31 @@ async function resolveCloud(recordId,eventId){
  await refresh();render();void synchronize();
 }
 function download(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1200);}
-function exportCSV(){const rows=reportRows();const csv=[['Заказ','Заказчик','Приход','Расход','Разница'],...rows.map(r=>[r.order_no,r.customer,r.inc,r.exp,r.difference])].map(line=>line.map(x=>{let val=String(x);if(/^[=+@\-\t\r]/.test(val))val="'"+val;return '"'+val.replaceAll('"','""')+'"';}).join(';')).join('\r\n');download(new Blob(['\ufeff',csv],{type:'text/csv;charset=utf-8'}),'finansy_otchet.csv');}
-async function exportPDF(){state.page='reports';render();window.print();toast('В окне печати выберите «Сохранить как PDF».');}
+function csvLine(row){return row.map(x=>{
+ const str=String(x??'');const safe=/^[=+@\-\t\r]/.test(str)?"'"+str:str;
+ return '"'+safe.replaceAll('"','""')+'"';
+}).join(';');}
+function exportCSV(){
+ if(state.from&&state.to&&state.from>state.to)return toast('Сначала исправьте период отчёта.');
+ let lines;
+ if(state.reportMode==='cash'){
+   const v=movementReport();
+   lines=[['Отчёт: движение денег'],['Период',reportPeriodLabel()],['Остаток на начало',v.opening],
+     ['Дата','Тип','Заказ','Категория','Способ оплаты','От кого / кому','Приход','Расход','Остаток','Примечание'],
+     ...v.rows.map(t=>[day(t.date),t.kind==='income'?'Приход':'Расход',t.order_no,t.category,t.payment,t.counterparty,t.inc,t.exp,t.running,t.comment]),
+     ['ИТОГО','','','','','',v.inc,v.exp,v.closing,'']];
+ }else{
+   const rows=reportRows();const inc=rows.reduce((n,r)=>n+r.inc,0),exp=rows.reduce((n,r)=>n+r.exp,0);
+   lines=[['Движение денег по заказам'],['Период',reportPeriodLabel()],['Заказ','Заказчик','Приход','Расход','Разница'],...rows.map(r=>[r.order_no,r.customer,r.inc,r.exp,r.difference]),['ИТОГО','',inc,exp,inc-exp]];
+ }
+ download(new Blob(['\ufeff',lines.map(csvLine).join('\r\n')],{type:'text/csv;charset=utf-8'}),`finansy_${state.reportMode}_${state.from||'all'}_${state.to||'all'}.csv`);
+}
+async function exportPDF(){
+ if(state.from&&state.to&&state.from>state.to)return toast('Сначала исправьте период отчёта.');
+ state.page='reports';render();
+ window.print();
+ toast('В окне печати выберите «Сохранить как PDF».');
+}
 
 async function seedDefaults(){
  const defaults={statuses:['Новый','В работе','Завершён','Отменён'],
@@ -383,6 +481,7 @@ document.addEventListener('change',ev=>{
  if(x.name==='filter_from'){state.from=x.value;render();}
  if(x.name==='filter_to'){state.to=x.value;render();}
  if(x.name==='order_filter'){state.orderFilter=x.value;render();}
+ if(x.name==='report_order'){state.reportOrderFilter=x.value;render();}
 });
 document.addEventListener('input',ev=>{
  const x=ev.target;if(x.name==='search_orders'||x.name==='search_ops'){
@@ -412,6 +511,9 @@ document.addEventListener('click',async ev=>{
  case 'delete-ref':await doDelete('reference',id);break;
  case 'toggle-ref':{const r=state.refs.find(x=>x.id===id);await stage('reference',id,{group_code:r.group_code,name:r.name,is_active:!r.is_active,sort_order:r.sort_order},'upsert');break;}
  case 'range-all':state.from='';state.to='';render();break;
+ case 'report-mode':state.reportMode=target.dataset.mode==='orders'?'orders':'cash';render();break;
+ case 'chart-day':{const iso=target.dataset.date;const totals=sumOperations(state.ops.filter(t=>t.date===iso));toast(`${day(iso)}: приход ${money(totals.inc)} сум, расход ${money(totals.exp)} сум`);break;}
+ case 'period-preset':{const p=target.dataset.period;const t=new Date();t.setHours(12,0,0,0);const fmt=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;if(p==='all'){state.from='';state.to='';}else if(p==='today'){state.from=fmt(t);state.to=fmt(t);}else if(p==='month'){state.from=fmt(new Date(t.getFullYear(),t.getMonth(),1));state.to=fmt(t);}else{const d=new Date(t);d.setDate(d.getDate()-6);state.from=fmt(d);state.to=fmt(t);}render();break;}
  case 'backup':await backup();break;case 'logout':await logOut();break;
  case 'csv':exportCSV();break;case 'pdf':await exportPDF();break;case 'print':window.print();break;
  }
