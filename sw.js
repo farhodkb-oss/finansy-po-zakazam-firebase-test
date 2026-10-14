@@ -1,8 +1,8 @@
 /* PWA offline shell. Never cache Firestore/Auth REST data or financial API responses. */
 const BASE=self.registration.scope;
-const CACHE='finansy-firestore-shell-v4-flat-'+new URL(BASE).pathname;
+const CACHE='finansy-firestore-shell-v6-payments-forced-'+new URL(BASE).pathname;
 const PREFIX='finansy-firestore-shell-';
-const SHELL=['./','./index.html','./manifest.webmanifest','./styles.css','./app.js','./firebase_bridge.js','./event_journal.js','./icon-192.png','./icon-512.png'].map(path=>new URL(path,BASE).href);
+const SHELL=['./','./index.html','./manifest.webmanifest','./styles_payments_20261014.css','./app_payments_20261014.js','./firebase_bridge.js','./event_journal.js','./icon-192.png','./icon-512.png'].map(path=>new URL(path,BASE).href);
 const FIREBASE_SDK='https://www.gstatic.com/firebasejs/13.0.0/';
 self.addEventListener('install',ev=>ev.waitUntil(caches.open(CACHE).then(async cache=>{
  await cache.addAll(SHELL);
