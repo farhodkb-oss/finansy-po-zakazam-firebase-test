@@ -22,7 +22,7 @@ const dirtyDate=iso=>iso&&/^\d{4}-\d\d-\d\d$/.test(iso)?iso:'—';
 let db=null,bulkMode=false,cloudConflicts=[],remoteHeads=new Map(),cloudEvents=[];
 let cloudReady=false,cloudOnline=false,unsubscribeCloud=null,activeUid=null,refreshChain=Promise.resolve();
 const inFlight=new Set();
-const state={driveStatus:'Firebase: вход не выполнен',page:'home',rows:[],refs:[],orders:[],ops:[],queue:[],session:false,connection:navigator.onLine?'online':'offline',busy:false,refGroup:'income',from:firstMonth(),to:today(),orderSearch:'',opSearch:'',orderFilter:'all',sort:{orders:['order_no',true],operations:['date',false],reports:['order_no',true],references:['name',true]},reportMode:'cash',reportOrderFilter:'all',print:false};
+const state={driveStatus:'Firebase: вход не выполнен',page:'home',rows:[],refs:[],orders:[],ops:[],queue:[],session:false,connection:navigator.onLine?'online':'offline',busy:false,refGroup:'income',from:firstMonth(),to:today(),orderSearch:'',opSearch:'',orderFilter:'all',sort:{orders:['order_no',true],operations:['date',false],reports:['order_no',true],references:['name',true]},reportMode:'cash',reportOrderFilter:'all',opMode:'day',opDate:today(),opFrom:today(),opTo:today(),opPreset:'today',print:false};
 
 async function openDB(userId){
  return new Promise((resolve,reject)=>{
@@ -85,6 +85,36 @@ function shell(contents){const p=PAGES.find(x=>x[0]===state.page);
 function panelsStat(list){return `<div class="cards">${list.map(([icon,title,num,cls,foot])=>`<div class="card"><div class="card-head"><span class="card-ic ${cls==='green'?'inc-bg':cls==='red'?'exp-bg':'neutral-bg'}">${icon}</span>${title}</div><div class="card-value ${cls}">${money(num)} ${title==='Всего заказов'?'':'<small style="font-size:11px;color:var(--muted)">сум</small>'}</div><div class="card-foot">${foot}</div></div>`).join('')}</div>`;}
 function sumOperations(ops){return ops.reduce((r,t)=>(r[t.kind==='income'?'inc':'exp']+=Number(t.amount||0),r),{inc:0,exp:0});}
 function inRange(t){return (!state.from||t.date>=state.from)&&(!state.to||t.date<=state.to)}
+// The transaction journal has its own period. Changing it must not alter reports or the dashboard.
+function inOperationsRange(t){
+ if(state.opMode==='all')return true;
+ if(state.opMode==='day')return t.date===state.opDate;
+ return (!state.opFrom||t.date>=state.opFrom)&&(!state.opTo||t.date<=state.opTo);
+}
+const localISO=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+function operationsPeriodText(){
+ if(state.opMode==='all')return 'за всё время';
+ if(state.opMode==='day')return `за ${day(state.opDate)}`;
+ return `с ${state.opFrom?day(state.opFrom):'начала учёта'} по ${state.opTo?day(state.opTo):'сегодня'}`;
+}
+function applyOperationsPeriod(preset){
+ const now=new Date();now.setHours(12,0,0,0);
+ state.opPreset=preset;
+ if(preset==='today'||preset==='yesterday'){
+   const d=new Date(now);if(preset==='yesterday')d.setDate(d.getDate()-1);
+   state.opMode='day';state.opDate=localISO(d);
+ }else if(preset==='all'){
+   state.opMode='all';
+ }else{
+   state.opMode='range';state.opTo=localISO(now);
+   const d=new Date(now);
+   if(preset==='week')d.setDate(d.getDate()-6);
+   if(preset==='month')d.setDate(1);
+   if(preset==='custom'){state.opFrom=state.opDate;state.opTo=state.opDate;}
+   else state.opFrom=localISO(d);
+ }
+ render();
+}
 function dateFilters(){return `<div class="filters no-print">${input('С даты','filter_from',state.from,'date')}${input('По дату','filter_to',state.to,'date')}<button class="btn secondary" data-action="range-all" style="align-self:end">За всё время</button></div>`;}
 function sevenDayData(){
  const now=new Date();now.setHours(12,0,0,0);
@@ -125,16 +155,24 @@ function orders(){const filtered=sortItems(state.orders.filter(x=>[x.order_no,x.
  const cards=filtered.map(o=>`<div class="mobile-card"><div class="mobile-card-top"><strong>№ ${e(o.order_no)} · ${e(o.customer)}</strong><span class="tag">${e(o.status)}</span></div><div class="muted">${e(o.description)}</div><div class="mobile-card-bottom"><strong>${money(o.contract_amount)} сум</strong><span class="muted">${day(o.created_date)}</span></div><div class="mini-actions"><button class="btn secondary small" data-action="edit-order" data-id="${o.id}">Изменить</button><button class="btn danger small" data-action="delete-order" data-id="${o.id}">Удалить</button></div></div>`).join('');
  return `<div class="panel"><div class="panel-head"><div><h2>Реестр заказов</h2><p>${filtered.length} записей · сортировка по заголовкам</p></div><button class="btn primary no-print" data-action="new-order">+ Новый заказ</button></div><div class="panel-inner"><div class="filters"><label class="field search">Поиск заказа<input name="search_orders" placeholder="Номер, заказчик или вид работ" value="${e(state.orderSearch)}"></label></div></div><div class="desktop-table">${table(headers,body,'Список заказов пуст')}</div><div class="mobile-list">${cards||'<div class="empty">Заказов пока нет</div>'}</div></div>`;
 }
-function txnTable(list,sortName='operations'){
+function txnTable(list,sortName='operations',emptyMessage='Операций пока нет'){
  const hasSort=sortName==='operations';const h=(key,title)=>hasSort?sortHeader('operations',key,title):`<th>${title}</th>`;
  const headers=h('date','Дата')+h('kind','Тип')+h('order_no','Заказ')+h('category','Категория')+h('amount','Сумма, сум')+h('payment','Оплата')+h('counterparty','От кого / кому')+h('comment','Примечание')+(hasSort?'<th class="no-print">Действия</th>':'');
  const body=list.map(t=>`<tr><td>${day(t.date)}</td><td><span class="tag ${t.kind}">${t.kind==='income'?'Приход':'Расход'}</span></td><td><b>${e(orderName(t.order_id))}</b></td><td>${e(t.category)}</td><td class="money ${t.kind==='income'?'green':'red'}">${money(t.amount)}</td><td>${e(t.payment)}</td><td>${e(t.counterparty)}</td><td class="muted">${e(t.comment)}</td>${hasSort?`<td class="no-print"><div class="action-cell"><button class="btn secondary small" data-action="edit-txn" data-id="${t.id}">Изменить</button><button class="btn danger small" data-action="delete-txn" data-id="${t.id}">×</button></div></td>`:''}</tr>`).join('');
  const cards=list.map(t=>`<div class="mobile-card"><div class="mobile-card-top"><span class="tag ${t.kind}">${t.kind==='income'?'Приход':'Расход'}</span><strong class="${t.kind==='income'?'green':'red'}">${money(t.amount)} сум</strong></div><div><b>Заказ: ${e(orderName(t.order_id))}</b> · ${e(t.category)}</div><div class="muted">${day(t.date)} · ${e(t.payment)}${t.counterparty?' · '+e(t.counterparty):''}</div>${t.comment?`<div class="muted">${e(t.comment)}</div>`:''}${hasSort?`<div class="mini-actions"><button class="btn small secondary" data-action="edit-txn" data-id="${t.id}">Изменить</button><button class="btn small danger" data-action="delete-txn" data-id="${t.id}">Удалить</button></div>`:''}</div>`).join('');
- return `<div class="desktop-table">${table(headers,body,'Операций пока нет')}</div><div class="mobile-list">${cards||'<div class="empty">Операций пока нет</div>'}</div>`;
+ return `<div class="desktop-table">${table(headers,body,emptyMessage)}</div><div class="mobile-list">${cards||`<div class="empty">${e(emptyMessage)}</div>`}</div>`;
 }
-function operations(){let list=state.ops.filter(x=>inRange(x)&&(!state.opSearch||[x.category,x.comment,x.counterparty,orderName(x.order_id),x.payment].join(' ').toLowerCase().includes(state.opSearch.toLowerCase()))&&(state.orderFilter==='all'||(state.orderFilter==='none'?x.order_id===null:x.order_id===state.orderFilter)));
+function operations(){
+ const invalid=state.opMode==='range'&&state.opFrom&&state.opTo&&state.opFrom>state.opTo;
+ let list=invalid?[]:state.ops.filter(x=>inOperationsRange(x)&&(!state.opSearch||[x.category,x.comment,x.counterparty,orderName(x.order_id),x.payment].join(' ').toLowerCase().includes(state.opSearch.toLowerCase()))&&(state.orderFilter==='all'||(state.orderFilter==='none'?x.order_id===null:x.order_id===state.orderFilter)));
+ const sum=sumOperations(list);
  list=sortItems(list.map(x=>({...x,order_no:orderName(x.order_id)})),'operations');
- return `<div class="panel"><div class="panel-head"><div><h2>Журнал денежных операций</h2><p>Приходы и расходы по всем заказам</p></div><div class="mini-actions no-print"><button class="btn primary" data-action="new-income">+ Приход</button><button class="btn danger" data-action="new-expense">− Расход</button></div></div><div class="panel-inner no-print"><div class="filters">${input('Период с','filter_from',state.from,'date')}${input('Период по','filter_to',state.to,'date')}<label class="field search">Поиск<input name="search_ops" value="${e(state.opSearch)}" placeholder="Категория, заказ, примечание"></label>${sel('Заказ','order_filter',[['all','Все заказы'],['none','Общие'],...state.orders.map(o=>[o.id,o.order_no])],state.orderFilter)}</div></div>${txnTable(list)}</div><div class="footer-note">Нажмите на название колонки для сортировки по возрастанию / убыванию.</div>`;
+ const presets=[['today','Сегодня'],['yesterday','Вчера'],['week','7 дней'],['month','Этот месяц'],['custom','Выбрать период'],['all','Все даты']];
+ const periodButtons=presets.map(([key,label])=>`<button type="button" class="btn small ${state.opPreset===key?'primary':'secondary'}" data-action="ops-period" data-period="${key}" ${state.opPreset===key?'aria-pressed="true"':'aria-pressed="false"'}>${label}</button>`).join('');
+ const dates=state.opMode==='day'?input('Дата операции','ops_date',state.opDate,'date'):state.opMode==='range'?input('Период с','ops_from',state.opFrom,'date')+input('Период по','ops_to',state.opTo,'date'):'';
+ const error=invalid?'<div class="notification">Дата начала периода позже даты окончания. Проверьте даты.</div>':'';
+ const noOps=state.opMode==='day'?'За выбранный день операций нет':state.opMode==='all'?'Операций пока нет':'За выбранный период операций нет';
+ return `<div class="panel"><div class="panel-head"><div><h2>Журнал денежных операций</h2><p>Приходы и расходы по всем заказам · По умолчанию — сегодня</p></div><div class="mini-actions no-print"><button class="btn primary" data-action="new-income">+ Приход</button><button class="btn danger" data-action="new-expense">− Расход</button></div></div><div class="panel-inner no-print operation-filter-block"><div class="period-buttons">${periodButtons}</div><div class="filters">${dates}<label class="field search">Поиск<input name="search_ops" value="${e(state.opSearch)}" placeholder="Категория, заказ, примечание"></label>${sel('Заказ','order_filter',[['all','Все заказы'],['none','Общие'],...state.orders.map(o=>[o.id,o.order_no])],state.orderFilter)}</div></div><div class="operation-summary"><span><b>${list.length}</b> операций ${operationsPeriodText()}</span><span class="green">Приход: <b>${money(sum.inc)}</b> сум</span><span class="red">Расход: <b>${money(sum.exp)}</b> сум</span></div>${error}${txnTable(list,'operations',noOps)}</div><div class="footer-note">Нажмите на заголовок колонки для сортировки. Выбранная дата влияет только на журнал операций, не меняет период отчётов.</div>`;
 }
 function references(){const group=state.refGroup;let list=sortItems(refs(group,false),'references');
  const headers=sortHeader('references','name','Название')+sortHeader('references','is_active','Статус')+'<th class="no-print">Действия</th>';
@@ -479,7 +517,10 @@ document.addEventListener('change',ev=>{
  }
  if(x.id==='import-json-file'&&x.files?.[0]){void importWindowsJSON(x.files[0]).catch(err=>toast('Ошибка импорта: '+err.message));}
  if(x.name==='filter_from'){state.from=x.value;render();}
- if(x.name==='filter_to'){state.to=x.value;render();}
+  if(x.name==='filter_to'){state.to=x.value;render();}
+  if(x.name==='ops_date'){state.opDate=x.value;state.opMode='day';state.opPreset='manual';render();}
+  if(x.name==='ops_from'){state.opFrom=x.value;state.opMode='range';state.opPreset='custom';render();}
+  if(x.name==='ops_to'){state.opTo=x.value;state.opMode='range';state.opPreset='custom';render();}
  if(x.name==='order_filter'){state.orderFilter=x.value;render();}
  if(x.name==='report_order'){state.reportOrderFilter=x.value;render();}
 });
@@ -492,7 +533,7 @@ document.addEventListener('input',ev=>{
 document.addEventListener('click',async ev=>{
  if(ev.target.id==='modal-bg'){closeModal();return;}
  const target=ev.target.closest('[data-page],[data-action],[data-group],[data-sort-table]');if(!target)return;
- if(target.dataset.page){state.page=target.dataset.page;render();window.scrollTo(0,0);return;}
+ if(target.dataset.page){state.page=target.dataset.page;if(state.page==='operations'&&state.opPreset==='today')state.opDate=today();render();window.scrollTo(0,0);return;}
  if(target.dataset.group){state.refGroup=target.dataset.group;render();return;}
  if(target.dataset.sortTable){const tab=target.dataset.sortTable,key=target.dataset.sortKey;const current=state.sort[tab];state.sort[tab]=[key,current[0]===key?!current[1]:true];render();return;}
  const action=target.dataset.action,id=target.dataset.id;
@@ -510,7 +551,8 @@ document.addEventListener('click',async ev=>{
  case 'new-ref':referenceForm();break;case 'edit-ref':referenceForm(state.refs.find(r=>r.id===id));break;
  case 'delete-ref':await doDelete('reference',id);break;
  case 'toggle-ref':{const r=state.refs.find(x=>x.id===id);await stage('reference',id,{group_code:r.group_code,name:r.name,is_active:!r.is_active,sort_order:r.sort_order},'upsert');break;}
- case 'range-all':state.from='';state.to='';render();break;
+  case 'range-all':state.from='';state.to='';render();break;
+  case 'ops-period':applyOperationsPeriod(target.dataset.period);break;
  case 'report-mode':state.reportMode=target.dataset.mode==='orders'?'orders':'cash';render();break;
  case 'chart-day':{const iso=target.dataset.date;const totals=sumOperations(state.ops.filter(t=>t.date===iso));toast(`${day(iso)}: приход ${money(totals.inc)} сум, расход ${money(totals.exp)} сум`);break;}
  case 'period-preset':{const p=target.dataset.period;const t=new Date();t.setHours(12,0,0,0);const fmt=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;if(p==='all'){state.from='';state.to='';}else if(p==='today'){state.from=fmt(t);state.to=fmt(t);}else if(p==='month'){state.from=fmt(new Date(t.getFullYear(),t.getMonth(),1));state.to=fmt(t);}else{const d=new Date(t);d.setDate(d.getDate()-6);state.from=fmt(d);state.to=fmt(t);}render();break;}
