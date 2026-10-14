@@ -1,0 +1,17 @@
+const assert=require('node:assert/strict');
+const journal=require('../assets/event_journal.js');
+const event=(event_id,record_id,parents=[],data={amount:100})=>({schema:1,event_id,record_id,kind:'transaction',action:'upsert',data,parents,at:new Date().toISOString()});
+const base=event('a','tx');
+const child=event('b','tx',['a'],{amount:200});
+let r=journal.reduce([base,child]);
+assert.equal(r.records.get('tx').data.amount,200);
+assert.equal(r.conflicts.length,0);
+r=journal.reduce([base,event('c','tx',['a'],{amount:300}),child]);
+assert.equal(r.conflicts.length,1);
+assert.equal(r.conflicts[0].heads.length,2);
+r=journal.reduce([base,child,event('c','tx',['a'],{amount:300}),event('d','tx',['b','c'],{amount:400})]);
+assert.equal(r.conflicts.length,0);
+assert.equal(r.records.get('tx').data.amount,400);
+r=journal.reduce([base,base]);
+assert.equal(r.seen.size,1);
+console.log('PASS: immutable events, idempotent IDs, conflict detection and merge');
